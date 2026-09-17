@@ -82,3 +82,18 @@ func TestDecodeFieldBooleanZeroLength(t *testing.T) {
 		t.Errorf("Nullable Boolean decode zero-length = %v, err: %v; want false", v, err)
 	}
 }
+
+func TestDecodePackedDecimal_LargePayload(t *testing.T) {
+	// 40-byte packed decimal payload (> 32 bytes)
+	// Example: 79 digits of '1' plus positive sign 'C'
+	b := make([]byte, 40)
+	for i := 0; i < 39; i++ {
+		b[i] = 0x11
+	}
+	b[39] = 0x1C // Last digit 1, sign C (positive)
+
+	res := DecodePackedDecimal(b, 0)
+	if len(res) != 79 {
+		t.Errorf("expected 79 digit string, got length %d: %s", len(res), res)
+	}
+}

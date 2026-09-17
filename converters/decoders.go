@@ -355,7 +355,13 @@ func DecodePackedDecimal(b []byte, scale int) string {
 		return "0"
 	}
 
-	var digits [64]byte
+	var stackDigits [64]byte
+	var digits []byte
+	if len(b)*2 <= 64 {
+		digits = stackDigits[:]
+	} else {
+		digits = make([]byte, len(b)*2)
+	}
 	pos := 0
 
 	for i := 0; i < len(b)-1; i++ {
