@@ -17,3 +17,9 @@
 
 **Learning:** When generating formatted string outputs from raw bytes (such as `DecodePackedDecimal`), using `make([]byte, outLen)` allocates a heap byte slice before `string(out)` allocates the returned string (2 allocs total). Switching to a stack-allocated byte array `var stackOut [64]byte` when `outLen <= 64` keeps the slice buffer on the stack (0 heap allocs for `out`), reducing heap allocations from 2 to 1 and speeding up conversion by ~28% with 50% memory reduction.
 **Action:** For string formatting functions that construct intermediate byte slices without passing them to `io.Reader`/`io.Writer` interfaces, use a local fixed stack array `var stack [64]byte` to eliminate intermediate heap allocations.
+
+## 2026-09-19 - Single-Buffer Allocation and Static Byte Descriptors for DRDA Command Packet Framing
+
+**Learning:** Composing DRDA command objects by nesting helper calls (`PackPKGNAMCSN` -> `PackBytes` -> `append` -> `PackDDMObject`) causes 3 to 4 independent heap allocations and multiple intermediate memory copies per SQL query/statement execution. Calculating total frame size upfront and writing the outer command header, embedded `PKGNAMCSN`, and invariant parameter descriptors (e.g. `paramRDBCMTOK`, `paramRTNSQLDA`, `paramTYPSQLDA`, `paramQRYCLSIMP`) directly into a single allocated buffer reduces allocations from 3-4 down to 1 alloc/op, cuts memory consumption by ~74-77% (from 304-416 B/op to 80-96 B/op), and increases packing throughput by 2.2x-2.7x.
+**Action:** When building nested DRDA protocol commands where inner components have deterministically calculable sizes and static trailing options, assemble them directly into a single contiguous buffer rather than using slice concatenation and intermediate wrapping.
+

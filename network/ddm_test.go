@@ -178,11 +178,133 @@ func TestPackPKGNAMCSN(t *testing.T) {
 	}
 }
 
+func TestPackCommands(t *testing.T) {
+	// 1. PackPRPSQLSTT
+	prpBytes := PackPRPSQLSTT("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if int(binary.BigEndian.Uint16(prpBytes[0:2])) != len(prpBytes) {
+		t.Errorf("PackPRPSQLSTT length mismatch: %d vs %d", binary.BigEndian.Uint16(prpBytes[0:2]), len(prpBytes))
+	}
+	if CodePoint(binary.BigEndian.Uint16(prpBytes[2:4])) != CodePointPRPSQLSTT {
+		t.Errorf("PackPRPSQLSTT codepoint mismatch: %v", binary.BigEndian.Uint16(prpBytes[2:4]))
+	}
+	subObjs, err := ParseDDMReply(prpBytes[4:])
+	if err != nil {
+		t.Fatalf("ParseDDMReply failed on PRPSQLSTT: %v", err)
+	}
+	if _, ok := subObjs[CodePointPKGNAMCSN]; !ok {
+		t.Errorf("missing PKGNAMCSN in PRPSQLSTT")
+	}
+	if rtn, ok := subObjs[CodePointRTNSQLDA]; !ok || !bytes.Equal(rtn, []byte{241}) {
+		t.Errorf("unexpected RTNSQLDA in PRPSQLSTT: %v", rtn)
+	}
+
+	// 2. PackEXCSQLIMM
+	immBytes := PackEXCSQLIMM("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if int(binary.BigEndian.Uint16(immBytes[0:2])) != len(immBytes) {
+		t.Errorf("PackEXCSQLIMM length mismatch")
+	}
+	if CodePoint(binary.BigEndian.Uint16(immBytes[2:4])) != CodePointEXCSQLIMM {
+		t.Errorf("PackEXCSQLIMM codepoint mismatch")
+	}
+	subObjs, err = ParseDDMReply(immBytes[4:])
+	if err != nil {
+		t.Fatalf("ParseDDMReply failed on EXCSQLIMM: %v", err)
+	}
+	if cmt, ok := subObjs[CodePointRDBCMTOK]; !ok || !bytes.Equal(cmt, []byte{241}) {
+		t.Errorf("unexpected RDBCMTOK in EXCSQLIMM: %v", cmt)
+	}
+
+	// 3. PackDSCSQLSTT
+	dscBytes := PackDSCSQLSTT("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if CodePoint(binary.BigEndian.Uint16(dscBytes[2:4])) != CodePointDSCSQLSTT {
+		t.Errorf("PackDSCSQLSTT codepoint mismatch")
+	}
+	subObjs, err = ParseDDMReply(dscBytes[4:])
+	if err != nil {
+		t.Fatalf("ParseDDMReply failed on DSCSQLSTT: %v", err)
+	}
+	if typ, ok := subObjs[CodePointTYPSQLDA]; !ok || !bytes.Equal(typ, []byte{1}) {
+		t.Errorf("unexpected TYPSQLDA in DSCSQLSTT: %v", typ)
+	}
+
+	// 4. PackEXCSQLSTT
+	excBytes := PackEXCSQLSTT("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if CodePoint(binary.BigEndian.Uint16(excBytes[2:4])) != CodePointEXCSQLSTT {
+		t.Errorf("PackEXCSQLSTT codepoint mismatch")
+	}
+	subObjs, err = ParseDDMReply(excBytes[4:])
+	if err != nil {
+		t.Fatalf("ParseDDMReply failed on EXCSQLSTT: %v", err)
+	}
+	if cmt, ok := subObjs[CodePointRDBCMTOK]; !ok || !bytes.Equal(cmt, []byte{241}) {
+		t.Errorf("unexpected RDBCMTOK in EXCSQLSTT: %v", cmt)
+	}
+
+	// 5. PackOPNQRY
+	opnBytes := PackOPNQRY("SYSH200", "TOKEN12", 1, "SAMPLE", 32767)
+	if int(binary.BigEndian.Uint16(opnBytes[0:2])) != len(opnBytes) {
+		t.Errorf("PackOPNQRY length mismatch")
+	}
+	if CodePoint(binary.BigEndian.Uint16(opnBytes[2:4])) != CodePointOPNQRY {
+		t.Errorf("PackOPNQRY codepoint mismatch")
+	}
+	subObjs, err = ParseDDMReply(opnBytes[4:])
+	if err != nil {
+		t.Fatalf("ParseDDMReply failed on OPNQRY: %v", err)
+	}
+	if _, ok := subObjs[CodePointPKGNAMCSN]; !ok {
+		t.Errorf("missing PKGNAMCSN in OPNQRY")
+	}
+	if blk, ok := subObjs[CodePointQRYBLKSZ]; !ok || binary.BigEndian.Uint32(blk) != 32767 {
+		t.Errorf("unexpected QRYBLKSZ in OPNQRY: %v", blk)
+	}
+	if maxBlk, ok := subObjs[CodePointMAXBLKEXT]; !ok || binary.BigEndian.Uint16(maxBlk) != 32767 {
+		t.Errorf("unexpected MAXBLKEXT in OPNQRY: %v", maxBlk)
+	}
+	if cls, ok := subObjs[CodePointQRYCLSIMP]; !ok || !bytes.Equal(cls, []byte{0x01}) {
+		t.Errorf("unexpected QRYCLSIMP in OPNQRY: %v", cls)
+	}
+
+	// 6. PackEXCSQLSET and PackSQLINTR
+	setBytes := PackEXCSQLSET("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if CodePoint(binary.BigEndian.Uint16(setBytes[2:4])) != CodePointEXCSQLSET {
+		t.Errorf("PackEXCSQLSET codepoint mismatch")
+	}
+	intrBytes := PackSQLINTR("SYSH200", "TOKEN12", 1, "SAMPLE")
+	if CodePoint(binary.BigEndian.Uint16(intrBytes[2:4])) != CodePointSQLINTR {
+		t.Errorf("PackSQLINTR codepoint mismatch")
+	}
+}
+
 func BenchmarkPackPKGNAMCSN(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = PackPKGNAMCSN("SAMPLE", "SYSH200", "TOKEN12", 1)
+	}
+}
+
+func BenchmarkPackPRPSQLSTT(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = PackPRPSQLSTT("SYSH200", "TOKEN12", 1, "SAMPLE")
+	}
+}
+
+func BenchmarkPackEXCSQLIMM(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = PackEXCSQLIMM("SYSH200", "TOKEN12", 1, "SAMPLE")
+	}
+}
+
+func BenchmarkPackOPNQRY(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = PackOPNQRY("SYSH200", "TOKEN12", 1, "SAMPLE", 32767)
 	}
 }
 
