@@ -31,6 +31,22 @@ func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), query)
 }
 
+// applyContextMetadata applies session-level user switching (WithUser) and client info
+// audit registers (WithClientInfo) propagated in ctx to ensure proper multi-tenant
+// identity isolation and auditability across all execution paths.
+func (c *Conn) applyContextMetadata(ctx context.Context) error {
+	if targetUser := UserFromContext(ctx); targetUser != "" && targetUser != c.session.CurrentUser() {
+		if err := c.session.SwitchUser(ctx, targetUser); err != nil {
+			return err
+		}
+	}
+
+	if clientInfo := ClientInfoFromContext(ctx); !clientInfo.IsEmpty() {
+		_ = c.session.SetClientInfo(ctx, clientInfo.ApplicationName, clientInfo.WorkstationName, clientInfo.UserID, clientInfo.Accounting, clientInfo.CorrelationToken)
+	}
+	return nil
+}
+
 // PrepareContext returns a prepared statement, bound to this connection with context support.
 func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	c.mu.Lock()
@@ -38,6 +54,10 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 
 	if c.closed || c.session == nil {
 		return nil, ErrConnectionClosed
+	}
+
+	if err := c.applyContextMetadata(ctx); err != nil {
+		return nil, err
 	}
 
 	outCols, paramCols, err := c.session.PrepareAndDescribe(ctx, query)
@@ -66,16 +86,8 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, ErrConnectionClosed
 	}
 
-	// Auto-switch user if specified via WithUser in context
-	if targetUser := UserFromContext(ctx); targetUser != "" && targetUser != c.session.CurrentUser() {
-		if err := c.session.SwitchUser(ctx, targetUser); err != nil {
-			return nil, err
-		}
-	}
-
-	// Auto-set client info if specified via WithClientInfo in context
-	if clientInfo := ClientInfoFromContext(ctx); !clientInfo.IsEmpty() {
-		_ = c.session.SetClientInfo(ctx, clientInfo.ApplicationName, clientInfo.WorkstationName, clientInfo.UserID, clientInfo.Accounting, clientInfo.CorrelationToken)
+	if err := c.applyContextMetadata(ctx); err != nil {
+		return nil, err
 	}
 
 	if len(args) == 0 {
@@ -114,16 +126,8 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, ErrConnectionClosed
 	}
 
-	// Auto-switch user if specified via WithUser in context
-	if targetUser := UserFromContext(ctx); targetUser != "" && targetUser != c.session.CurrentUser() {
-		if err := c.session.SwitchUser(ctx, targetUser); err != nil {
-			return nil, err
-		}
-	}
-
-	// Auto-set client info if specified via WithClientInfo in context
-	if clientInfo := ClientInfoFromContext(ctx); !clientInfo.IsEmpty() {
-		_ = c.session.SetClientInfo(ctx, clientInfo.ApplicationName, clientInfo.WorkstationName, clientInfo.UserID, clientInfo.Accounting, clientInfo.CorrelationToken)
+	if err := c.applyContextMetadata(ctx); err != nil {
+		return nil, err
 	}
 
 	if len(args) == 0 {

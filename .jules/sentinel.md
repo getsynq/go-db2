@@ -7,5 +7,10 @@
 
 ## 2026-03-30 - Slice Index Bounds Protection in Wire Decoders
 **Vulnerability:** Zero-length boolean parameter scale metadata (`ps`) caused `DecodeField` to allocate a zero-length slice and access `buf[len(buf)-1]` (`buf[-1]`), triggering an unhandled runtime panic and application crash. Additionally, `DecodePackedDecimal` used a fixed-size 64-byte stack array, panicking when decoding packed decimal payloads exceeding 32 bytes (>64 digits).
-**Learning:** Binary protocol decoders handling length fields from remote network frames or parameter metadata must always validate length boundaries before slice index operations and avoid fixed-size arrays for variable-length payload buffers.
 **Prevention:** Always perform explicit slice length validation (`len(buf) == 0`) before negative/end-relative indexing and use dynamic slice allocations (`make([]byte, len(b)*2)`) when parsing wire protocol structures.
+
+## 2026-09-19 - Context Identity & Auditing Isolation in Prepared Statements
+**Vulnerability:** Multi-tenant identity transitions (`WithUser`) and client audit registers (`WithClientInfo`) were only applied in direct query executions (`Conn.ExecContext`, `Conn.QueryContext`), but were bypassed in prepared statements (`Conn.PrepareContext`, `Stmt.ExecContext`, `Stmt.QueryContext`), allowing pooled prepared statements to execute under stale user privileges and without audit registers.
+**Learning:** `database/sql` directs prepared statement invocations directly to `driver.Stmt` methods rather than `driver.Conn`, so context metadata handlers must be applied across both `driver.Conn` and `driver.Stmt` execution paths to prevent multi-tenant boundary escapes.
+**Prevention:** Centralize context metadata resolution into an `applyContextMetadata(ctx)` helper and invoke it at all statement entry points (`PrepareContext`, `execContextLocked`, `queryContextLocked`, `ExecContext`, `QueryContext`).
+

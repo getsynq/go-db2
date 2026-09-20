@@ -490,4 +490,42 @@ func TestSecurity_NullByteSanitization_AdminCmd(t *testing.T) {
 	}
 }
 
+// 16. SEC-16: Context Metadata (WithUser & WithClientInfo) Enforcement in Prepared Statements
+func TestSecurity_PreparedStatement_ContextMetadata(t *testing.T) {
+	sess := network.NewSession(network.SessionConfig{Database: "TESTDB"})
+	conn := &Conn{session: sess}
+	stmt := NewStmt(conn, "SELECT 1 FROM SYSIBM.SYSDUMMY1", nil, nil)
+
+	maliciousCtx := WithUser(context.Background(), "ADMIN; DROP TABLE USERS; --")
+
+	// 1. Stmt.ExecContext must enforce user validation / switching
+	_, err := stmt.ExecContext(maliciousCtx, nil)
+	if err == nil {
+		t.Fatal("expected error executing Stmt.ExecContext with malicious WithUser, got nil (authorization bypass!)")
+	}
+
+	// 2. Stmt.QueryContext must enforce user validation / switching
+	_, err = stmt.QueryContext(maliciousCtx, nil)
+	if err == nil {
+		t.Fatal("expected error executing Stmt.QueryContext with malicious WithUser, got nil (authorization bypass!)")
+	}
+
+	// 3. Conn.PrepareContext must enforce user validation / switching
+	_, err = conn.PrepareContext(maliciousCtx, "SELECT 1 FROM SYSIBM.SYSDUMMY1")
+	if err == nil {
+		t.Fatal("expected error executing Conn.PrepareContext with malicious WithUser, got nil (authorization bypass!)")
+	}
+
+	// 4. Verify client info register propagation
+	info := ClientInfo{
+		ApplicationName: "audit_app_stmt",
+		WorkstationName: "node_sec_stmt",
+		UserID:          "auditor_stmt",
+	}
+	clientCtx := WithClientInfo(context.Background(), info)
+	if err := conn.applyContextMetadata(clientCtx); err != nil {
+		t.Fatalf("unexpected error applying client info: %v", err)
+	}
+}
+
 var _ driver.Stmt = (*Stmt)(nil)

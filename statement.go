@@ -73,6 +73,10 @@ func (s *Stmt) execContextLocked(ctx context.Context, args []driver.NamedValue) 
 		return nil, ErrConnectionClosed
 	}
 
+	if err := s.conn.applyContextMetadata(ctx); err != nil {
+		return nil, err
+	}
+
 	if len(args) != len(s.paramCols) {
 		return nil, fmt.Errorf("db2: expected %d arguments, got %d", len(s.paramCols), len(args))
 	}
@@ -203,6 +207,10 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 func (s *Stmt) queryContextLocked(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	if s.closed || s.conn == nil || s.conn.session == nil {
 		return nil, ErrConnectionClosed
+	}
+
+	if err := s.conn.applyContextMetadata(ctx); err != nil {
+		return nil, err
 	}
 
 	if len(args) != len(s.paramCols) {
