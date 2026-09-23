@@ -20,10 +20,9 @@ func TestLive_XMLAndLargeObjectValues(t *testing.T) {
 		t.Fatalf("sql.Open failed: %v", err)
 	}
 	defer db.Close()
-	// Each value on its own connection: a query returning XML ends its first
-	// query block without ENDQRYRM, and only one CNTQRY is sent, so the cursor
-	// stays open and the next statement on that connection fails with -519.
-	db.SetMaxIdleConns(0)
+	// One connection for every query, so a cursor left open by one of them
+	// fails the next (SQLCODE -519).
+	db.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -63,5 +62,76 @@ func TestLive_XMLAndLargeObjectValues(t *testing.T) {
 	}
 	if want := strings.Repeat("z", 30000) + strings.Repeat("y", 30000); string(blob) != want {
 		t.Fatalf("BLOB is %d bytes starting %q, want 60000", len(blob), blob[:min(8, len(blob))])
+	}
+
+	// Db2 sends one row per query block when the rows carry XML.
+	rows, err := db.QueryContext(ctx, `SELECT XMLELEMENT(NAME "t", TABNAME) FROM SYSCAT.TABLES FETCH FIRST 5 ROWS ONLY`)
+	if err != nil {
+		t.Fatalf("querying several XML rows: %v", err)
+	}
+	var xmlRows int
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scanning an XML row: %v", err)
+		}
+		if !strings.HasPrefix(v, "<t>") {
+			t.Fatalf("XML row = %q", v)
+		}
+		xmlRows++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating XML rows: %v", err)
+	}
+	rows.Close()
+	if xmlRows != 5 {
+		t.Fatalf("got %d XML rows, want 5", xmlRows)
+	}
+}
+
+// A result set many query blocks long, with rows split across blocks.
+func TestLive_LargeResultSet(t *testing.T) {
+	dsn := os.Getenv("DB2_DSN")
+	if dsn == "" {
+		t.Skip("DB2_DSN not set")
+	}
+	db, err := sql.Open("db2", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	var want int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM SYSCAT.COLUMNS`).Scan(&want); err != nil {
+		t.Fatalf("counting SYSCAT.COLUMNS: %v", err)
+	}
+	for _, args := range [][]any{nil, {"%"}} {
+		q := `SELECT TABSCHEMA, TABNAME, COLNAME, TYPENAME, REMARKS FROM SYSCAT.COLUMNS`
+		if args != nil {
+			q += ` WHERE TABNAME LIKE ?` // the prepared-statement path
+		}
+		rows, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			t.Fatalf("querying SYSCAT.COLUMNS (args %v): %v", args, err)
+		}
+		got := 0
+		for rows.Next() {
+			var schema, table, column, typ string
+			var remarks sql.NullString
+			if err := rows.Scan(&schema, &table, &column, &typ, &remarks); err != nil {
+				t.Fatalf("scanning row %d: %v", got+1, err)
+			}
+			got++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterating SYSCAT.COLUMNS: %v", err)
+		}
+		rows.Close()
+		if got != want {
+			t.Fatalf("got %d rows (args %v), want %d", got, args, want)
+		}
 	}
 }
