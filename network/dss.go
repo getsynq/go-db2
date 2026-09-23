@@ -125,6 +125,13 @@ func WriteRequestDSS(w io.Writer, payload []byte, curID uint16, nextHasSameID, l
 
 // ReadDSS reads a complete DSS packet from the reader.
 // Returns the DSS header, the outer DDM codepoint, the payload bytes, a boolean indicating if more query data pages follow, and an error.
+//
+// A DSS longer than 32767 bytes is split into segments: the high bit of the
+// length marks a DSS as continued, and every continuation segment starts with
+// its own 2-byte length carrying the same flag. All segments are read, so the
+// next DSS always starts on a header. The DDM object inside may use an extended
+// length (see readDDMObject). The more-data flag is always false: the payload
+// is returned whole.
 func ReadDSS(r io.Reader) (*DSSHeader, CodePoint, []byte, bool, error) {
 	var hdrBuf [6]byte
 	if _, err := io.ReadFull(r, hdrBuf[:]); err != nil {
@@ -137,75 +144,88 @@ func ReadDSS(r io.Reader) (*DSSHeader, CodePoint, []byte, bool, error) {
 
 	dssLen := binary.BigEndian.Uint16(hdrBuf[0:2])
 	flags := hdrBuf[3]
-	dssType := flags & 0x0F
-	chained := (flags & DSSFlagChained) != 0
-	sameID := (flags & DSSFlagSameID) != 0
-	hasError := (flags & DSSFlagError) != 0
-	correlationID := binary.BigEndian.Uint16(hdrBuf[4:6])
-
 	header := &DSSHeader{
 		Length:        dssLen,
-		Type:          dssType,
-		Chained:       chained,
-		SameID:        sameID,
-		HasError:      hasError,
-		CorrelationID: correlationID,
+		Type:          flags & 0x0F,
+		Chained:       (flags & DSSFlagChained) != 0,
+		SameID:        (flags & DSSFlagSameID) != 0,
+		HasError:      (flags & DSSFlagError) != 0,
+		CorrelationID: binary.BigEndian.Uint16(hdrBuf[4:6]),
 	}
 
-	// Reject frames claiming length shorter than the 6-byte DSS header itself
-	if dssLen < 6 && dssLen != 0xFFFF {
-		return header, 0, nil, false, fmt.Errorf("db2: invalid DSS frame length %d: less than header size 6", dssLen)
+	continued := dssLen&dssContinuationFlag != 0
+	segLen := int(dssLen &^ dssContinuationFlag)
+	if segLen < 6 {
+		return header, 0, nil, false, fmt.Errorf("db2: invalid DSS frame length %d: less than header size 6", segLen)
 	}
 
-	// Read DDM Object Header (2 bytes length + 2 bytes Codepoint)
-	ddmHdr := make([]byte, 4)
-	if _, err := io.ReadFull(r, ddmHdr); err != nil {
-		return header, 0, nil, false, fmt.Errorf("failed to read DDM header: %w", err)
+	body := make([]byte, segLen-6)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return header, 0, nil, false, fmt.Errorf("failed to read DSS segment: %w", err)
 	}
 
-	objLen := binary.BigEndian.Uint16(ddmHdr[0:2])
-	codePoint := CodePoint(binary.BigEndian.Uint16(ddmHdr[2:4]))
-	moreData := false
-
-	// Handle standard or multi-page continuing query data (QRYDTA)
-	if dssLen == 0xFFFF {
-		// Large Query Data continuation block
-		obj := make([]byte, 32757) // 0x7FFF - 6 (DSS) - 4 (DDM)
-		if _, err := io.ReadFull(r, obj); err != nil {
-			return header, codePoint, nil, false, err
+	for continued {
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			return header, 0, nil, false, fmt.Errorf("failed to read DSS continuation header: %w", err)
 		}
-
-		nextLenBuf := make([]byte, 2)
-		if _, err := io.ReadFull(r, nextLenBuf); err != nil {
-			return header, codePoint, nil, false, err
+		contLen := binary.BigEndian.Uint16(lenBuf[:])
+		continued = contLen&dssContinuationFlag != 0
+		n := int(contLen &^ dssContinuationFlag)
+		if n < 2 {
+			return header, 0, nil, false, fmt.Errorf("db2: invalid DSS continuation length %d", n)
 		}
-		nextLen := binary.BigEndian.Uint16(nextLenBuf)
-		if nextLen > 2 {
-			extra := make([]byte, nextLen-2)
-			if _, err := io.ReadFull(r, extra); err != nil {
-				return header, codePoint, nil, false, err
-			}
-			obj = append(obj, extra...)
+		start := len(body)
+		body = append(body, make([]byte, n-2)...)
+		if _, err := io.ReadFull(r, body[start:]); err != nil {
+			return header, 0, nil, false, fmt.Errorf("failed to read DSS continuation: %w", err)
 		}
-		if nextLen == 0x7FFE {
-			moreData = true
+	}
+
+	codePoint, payload, err := readDDMObject(body)
+	return header, codePoint, payload, false, err
+}
+
+// dssContinuationFlag is the high bit of a DSS or continuation segment length.
+const dssContinuationFlag = 0x8000
+
+// readDDMObject decodes the DDM object at the start of a DSS body.
+//
+// A DDM length with the high bit set is an extended length: the low 15 bits
+// minus the 4-byte header give how many bytes of length follow the codepoint.
+// Zero such bytes (0x8004) means the object runs to the end of the DSS, which
+// is how Db2 sends XML values in EXTDTA.
+func readDDMObject(body []byte) (CodePoint, []byte, error) {
+	if len(body) < 4 {
+		return 0, nil, fmt.Errorf("invalid DDM object length: DSS body holds %d bytes", len(body))
+	}
+	objLen := binary.BigEndian.Uint16(body[0:2])
+	codePoint := CodePoint(binary.BigEndian.Uint16(body[2:4]))
+
+	if objLen&0x8000 == 0 {
+		if objLen < 4 {
+			return codePoint, nil, fmt.Errorf("invalid DDM object length: %d", objLen)
 		}
-		return header, codePoint, obj, moreData, nil
+		if int(objLen) > len(body) {
+			return codePoint, nil, fmt.Errorf("db2: DDM object length %d exceeds DSS frame payload capacity %d", objLen, len(body))
+		}
+		return codePoint, body[4:objLen], nil
 	}
 
-	if objLen < 4 {
-		return header, codePoint, nil, false, fmt.Errorf("invalid DDM object length: %d", objLen)
+	extBytes := int(objLen&0x7FFF) - 4
+	switch {
+	case extBytes == 0:
+		return codePoint, body[4:], nil
+	case extBytes < 0 || extBytes > 8 || 4+extBytes > len(body):
+		return codePoint, nil, fmt.Errorf("db2: invalid DDM extended length field 0x%04X", objLen)
 	}
-
-	if int(objLen) > int(dssLen)-6 {
-		return header, codePoint, nil, false, fmt.Errorf("db2: DDM object length %d exceeds DSS frame payload capacity %d", objLen, dssLen-6)
+	var dataLen uint64
+	for _, b := range body[4 : 4+extBytes] {
+		dataLen = dataLen<<8 | uint64(b)
 	}
-
-	payloadLen := int(objLen - 4)
-	payload := make([]byte, payloadLen)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return header, codePoint, nil, false, fmt.Errorf("failed to read DDM payload: %w", err)
+	if dataLen > uint64(len(body)-4-extBytes) {
+		return codePoint, nil, fmt.Errorf("db2: DDM extended length %d exceeds DSS payload %d", dataLen, len(body)-4-extBytes)
 	}
-
-	return header, codePoint, payload, moreData, nil
+	start := 4 + extBytes
+	return codePoint, body[start : start+int(dataLen)], nil
 }
