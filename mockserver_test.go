@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 // mockServer is a minimal DRDA server: it completes the connect handshake and

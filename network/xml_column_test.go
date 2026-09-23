@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/go-db2/go-db2/converters"
+	"github.com/getsynq/go-db2/converters"
 )
 
 // Db2 describes an XML result column as FD:OCA type 0xC7 (0xC6 when not

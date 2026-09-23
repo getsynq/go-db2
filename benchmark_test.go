@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-db2/go-db2/converters"
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/converters"
+	"github.com/getsynq/go-db2/types"
 )
 
 func getBenchmarkDSN() string {

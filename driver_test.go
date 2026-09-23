@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 func TestDatabaseSqlOpenAndPing(t *testing.T) {

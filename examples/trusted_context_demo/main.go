@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-db2/go-db2"
+	"github.com/getsynq/go-db2"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 // Config holds the configuration options parsed from a connection string (DSN or URL).

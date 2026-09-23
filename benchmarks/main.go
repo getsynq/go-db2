@@ -8,10 +8,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-db2/go-db2/benchmarks/suite"
+	"github.com/getsynq/go-db2/benchmarks/suite"
 
 	// Drivers under test
-	_ "github.com/go-db2/go-db2"
+	_ "github.com/getsynq/go-db2"
 	_ "github.com/ibmdb/go_ibm_db"
 )
 

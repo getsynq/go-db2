@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-db2/go-db2/network"
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/network"
+	"github.com/getsynq/go-db2/types"
 )
 
 func TestRowsSingleResultSet(t *testing.T) {

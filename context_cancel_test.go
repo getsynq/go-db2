@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 // A query the server never answers must return once its context is done,

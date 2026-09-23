@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/go-db2/go-db2/network"
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/network"
+	"github.com/getsynq/go-db2/types"
 )
 
 // Stmt implements the database/sql/driver.Stmt and StmtExecContext / StmtQueryContext interfaces.
