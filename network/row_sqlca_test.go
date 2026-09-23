@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-db2/go-db2/converters"
+	"github.com/getsynq/go-db2/converters"
 )
 
 // rowSQLCA is the SQLCA a row starts with when the server attaches a warning
