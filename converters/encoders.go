@@ -528,6 +528,21 @@ func toBytes(val any) []byte {
 	}
 }
 
+// packDDM wraps body in a DDM object header, with a 4-byte extended length
+// when it does not fit in 15 bits (network.PackDDMObject, which this package
+// cannot import).
+func packDDM(cp uint16, body []byte) []byte {
+	if 4+len(body) <= 0x7FFF {
+		obj := binary.BigEndian.AppendUint16(make([]byte, 0, 4+len(body)), uint16(4+len(body)))
+		obj = binary.BigEndian.AppendUint16(obj, cp)
+		return append(obj, body...)
+	}
+	obj := binary.BigEndian.AppendUint16(make([]byte, 0, 8+len(body)), 0x8008)
+	obj = binary.BigEndian.AppendUint16(obj, cp)
+	obj = binary.BigEndian.AppendUint32(obj, uint32(len(body)))
+	return append(obj, body...)
+}
+
 // BuildSQLDTA constructs the complete SQLDTA object containing FDODSC and FDODTA blocks for the parameters.
 // Optimization: Pre-calculates exact FDODSC size and constructs SQLDTA payload directly in a single contiguous buffer (reduces heap allocs by 80%, cuts execution time by ~33%).
 func BuildSQLDTA(colTypes []types.SQLType, colLens []int64, precs, scales []int, args []any, endian binary.ByteOrder) ([]byte, error) {
@@ -588,8 +603,14 @@ func BuildSQLDTA(colTypes []types.SQLType, colLens []int64, precs, scales []int,
 	}
 
 	bodyLen := 4 + (4 + fdodscLen) + (4 + dtaBytesLen)
-	if bodyLen > 65529 {
-		return nil, fmt.Errorf("db2: parameter payload length %d exceeds maximum DRDA DSS limit of 65529 bytes", bodyLen)
+	if bodyLen > 0x7FFF {
+		// Too long for 15-bit DDM lengths: repack SQLDTA and FDODTA with
+		// extended lengths. Sending it over more than one DSS is up to the
+		// caller's WriteRequestDSS.
+		fdodsc := sqldta[8 : 8+fdodscLen]
+		dta := sqldta[dtaOffset:]
+		inner := append(packDDM(0x0010, fdodsc), packDDM(0x147A, dta)...) // FDODSC, FDODTA
+		return packDDM(0x2412, inner), nil                                // SQLDTA
 	}
 
 	// Fill in headers

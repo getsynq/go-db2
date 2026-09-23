@@ -296,16 +296,19 @@ func TestSecurity_DecodeField_TruncatedMetadataPanicProtection(t *testing.T) {
 	}
 }
 
-// 11. SEC-07: PackDDMObject protection against uint16 overflow
+// 11. SEC-07: PackDDMObject protection against uint16 overflow: a body too
+// long for a 15-bit length is carried whole behind a 4-byte extended length.
 func TestSecurity_PackDDMObject_LargePayloadProtection(t *testing.T) {
 	largeBody := make([]byte, 70000)
 	obj := network.PackDDMObject(network.CodePointSQLSTT, largeBody)
-	if len(obj) > 65535 {
-		t.Fatalf("PackDDMObject exceeded uint16 max: %d bytes", len(obj))
+	if got := binary.BigEndian.Uint16(obj[0:2]); got != 0x8008 {
+		t.Fatalf("expected extended length field 0x8008, got 0x%04X", got)
 	}
-	totalLen := binary.BigEndian.Uint16(obj[0:2])
-	if totalLen != 65535 {
-		t.Fatalf("expected totalLen=65535, got %d", totalLen)
+	if got := binary.BigEndian.Uint32(obj[4:8]); got != 70000 {
+		t.Fatalf("expected extended length 70000, got %d", got)
+	}
+	if len(obj) != 8+70000 {
+		t.Fatalf("expected %d bytes, got %d", 8+70000, len(obj))
 	}
 }
 
