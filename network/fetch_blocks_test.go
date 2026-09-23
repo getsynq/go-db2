@@ -149,11 +149,11 @@ func TestQueryFetchesEveryQueryBlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("query failed: %v", err)
 			}
-			var got []int32
+			var got []int64
 			for _, r := range rows {
-				got = append(got, r[0].(int32))
+				got = append(got, r[0].(int64))
 			}
-			if want := []int32{1, 2, 3, 4, 5, 6, 7}; !equalInt32(got, want) {
+			if want := []int64{1, 2, 3, 4, 5, 6, 7}; !equalInt64(got, want) {
 				t.Fatalf("rows = %v, want %v", got, want)
 			}
 
@@ -193,7 +193,7 @@ func TestQueryReportsErrorsFromContinuedBlocks(t *testing.T) {
 	}
 }
 
-func equalInt32(a, b []int32) bool {
+func equalInt64(a, b []int64) bool {
 	if len(a) != len(b) {
 		return false
 	}
