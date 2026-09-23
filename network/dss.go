@@ -76,44 +76,57 @@ func WriteRequestDSS(w io.Writer, payload []byte, curID uint16, nextHasSameID, l
 		dssType = DSSTypeObject
 	}
 
-	const maxChunkSize = 65529 // 65535 - 6 bytes header
-	offset := 0
-	totalLen := len(payload)
+	// A DSS is at most 32767 bytes. A longer payload is sent as one DSS
+	// continued over segments, the way ReadDSS reads it: the first segment has
+	// the 6-byte header, every later one a 2-byte length, and the high bit of
+	// a segment's length says another segment follows.
+	first := payload
+	rest := []byte(nil)
+	if 6+len(payload) > maxDSSSegment {
+		first, rest = payload[:maxDSSSegment-6], payload[maxDSSSegment-6:]
+	}
 
 	var hdr [6]byte
+	length := uint16(6 + len(first))
+	if len(rest) > 0 {
+		length |= dssContinuationFlag
+	}
+	binary.BigEndian.PutUint16(hdr[0:2], length)
+	hdr[2] = DSSMagic
+	flags := dssType & 0x0F
+	if !lastPacket {
+		flags |= DSSFlagChained
+	}
+	if nextHasSameID {
+		flags |= DSSFlagSameID
+	}
+	hdr[3] = flags
+	binary.BigEndian.PutUint16(hdr[4:6], curID)
 
-	for offset < totalLen {
-		chunkEnd := offset + maxChunkSize
-		isFinalChunk := false
-		if chunkEnd >= totalLen {
-			chunkEnd = totalLen
-			isFinalChunk = true
+	if _, err := w.Write(hdr[:]); err != nil {
+		return curID, fmt.Errorf("failed to write DSS header: %w", err)
+	}
+	if _, err := w.Write(first); err != nil {
+		return curID, fmt.Errorf("failed to write DSS payload: %w", err)
+	}
+
+	for len(rest) > 0 {
+		seg := rest
+		if 2+len(seg) > maxDSSSegment {
+			seg = rest[:maxDSSSegment-2]
 		}
-
-		chunk := payload[offset:chunkEnd]
-		chained := !lastPacket || !isFinalChunk
-
-		binary.BigEndian.PutUint16(hdr[0:2], uint16(len(chunk)+6))
-		hdr[2] = DSSMagic
-
-		flags := dssType & 0x0F
-		if chained {
-			flags |= DSSFlagChained
+		rest = rest[len(seg):]
+		segLen := uint16(2 + len(seg))
+		if len(rest) > 0 {
+			segLen |= dssContinuationFlag
 		}
-		if nextHasSameID || !isFinalChunk {
-			flags |= DSSFlagSameID
+		binary.BigEndian.PutUint16(hdr[0:2], segLen)
+		if _, err := w.Write(hdr[0:2]); err != nil {
+			return curID, fmt.Errorf("failed to write DSS continuation header: %w", err)
 		}
-		hdr[3] = flags
-		binary.BigEndian.PutUint16(hdr[4:6], curID)
-
-		if _, err := w.Write(hdr[:]); err != nil {
-			return curID, fmt.Errorf("failed to write DSS header: %w", err)
+		if _, err := w.Write(seg); err != nil {
+			return curID, fmt.Errorf("failed to write DSS continuation: %w", err)
 		}
-		if _, err := w.Write(chunk); err != nil {
-			return curID, fmt.Errorf("failed to write DSS payload: %w", err)
-		}
-
-		offset = chunkEnd
 	}
 
 	if !nextHasSameID {
@@ -188,6 +201,9 @@ func ReadDSS(r io.Reader) (*DSSHeader, CodePoint, []byte, bool, error) {
 
 // dssContinuationFlag is the high bit of a DSS or continuation segment length.
 const dssContinuationFlag = 0x8000
+
+// maxDSSSegment is the longest a DSS or one of its continuation segments can be.
+const maxDSSSegment = 0x7FFF
 
 // readDDMObject decodes the DDM object at the start of a DSS body.
 //
