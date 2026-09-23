@@ -25,15 +25,33 @@ type ManagerLevel struct {
 }
 
 // PackDDMObject wraps raw body bytes into a DDM object header (2 bytes length + 2 bytes codepoint + body).
+//
+// A DDM length has 15 bits. A longer object gets an extended length: the
+// length field is 0x8000 plus the size of the header including the extended
+// length bytes, and the body's length follows the codepoint (see readDDMObject).
 func PackDDMObject(cp CodePoint, body []byte) []byte {
 	totalLen := len(body) + 4
-	if totalLen > 65535 {
-		totalLen = 65535
+	if totalLen <= 0x7FFF {
+		buf := make([]byte, totalLen)
+		binary.BigEndian.PutUint16(buf[0:2], uint16(totalLen))
+		binary.BigEndian.PutUint16(buf[2:4], uint16(cp))
+		copy(buf[4:], body)
+		return buf
 	}
-	buf := make([]byte, totalLen)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(totalLen))
+
+	extBytes := 4
+	if uint64(len(body)) > 0x7FFFFFFF {
+		extBytes = 8
+	}
+	buf := make([]byte, 4+extBytes+len(body))
+	binary.BigEndian.PutUint16(buf[0:2], 0x8000|uint16(4+extBytes))
 	binary.BigEndian.PutUint16(buf[2:4], uint16(cp))
-	copy(buf[4:], body[:totalLen-4])
+	if extBytes == 4 {
+		binary.BigEndian.PutUint32(buf[4:8], uint32(len(body)))
+	} else {
+		binary.BigEndian.PutUint64(buf[4:12], uint64(len(body)))
+	}
+	copy(buf[4+extBytes:], body)
 	return buf
 }
 
