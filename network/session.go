@@ -1055,17 +1055,27 @@ func (s *Session) fetchQuery(replies []ReplyPacket, columns []ColumnDescription)
 	return q.columns, rows, nil
 }
 
-// decodeRows decodes QRYDTA row data: each row is a 2-byte header starting
-// 0xFF, followed by one value per field.
+// decodeRows decodes QRYDTA row data. Each row starts with its SQLCA, which is
+// the null indicator 0xFF unless the server attached a warning or an error to
+// the row, then the indicator of the row data (0x00 when present), then one
+// value per field.
 func decodeRows(fields []FieldDescriptor, data []byte, endian binary.ByteOrder) ([][]any, error) {
 	reader := bytes.NewReader(data)
 	var rows [][]any
 	for reader.Len() >= 2 {
-		var rowHdr [2]byte
-		if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
+		if first, _ := reader.ReadByte(); first != 0x00 && first != 0xFF {
 			break
 		}
-		if rowHdr[0] != 0xFF {
+		_ = reader.UnreadByte()
+		code, state, err := readRowSQLCA(reader, endian)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the SQLCA of row %d: %w", len(rows)+1, err)
+		}
+		if code < 0 {
+			return nil, fmt.Errorf("db2: SQLCODE=%d SQLSTATE=%s in row %d", code, state, len(rows)+1)
+		}
+		dataInd, err := reader.ReadByte()
+		if err != nil || dataInd != 0x00 {
 			break
 		}
 		row := make([]any, len(fields))
@@ -1080,6 +1090,54 @@ func decodeRows(fields []FieldDescriptor, data []byte, endian binary.ByteOrder) 
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+// readRowSQLCA reads the SQLCA group a QRYDTA row starts with and returns its
+// SQLCODE and SQLSTATE; a null SQLCA (0xFF) is SQLCODE 0. The layout is the
+// SQLCAGRP of DRDA: SQLCODE, SQLSTATE, SQLERRPROC, then the SQLCAXGRP (SQLERRD,
+// SQLWARN, the RDB name and two message texts) and the SQLDIAGGRP, each behind
+// its own null indicator.
+func readRowSQLCA(r *bytes.Reader, endian binary.ByteOrder) (int32, string, error) {
+	ind, err := r.ReadByte()
+	if err != nil {
+		return 0, "", err
+	}
+	if ind == 0xFF {
+		return 0, "", nil
+	}
+	var head [4 + 5 + 8]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return 0, "", err
+	}
+	code := int32(endian.Uint32(head[0:4]))
+	state := string(head[4:9])
+
+	xInd, err := r.ReadByte()
+	if err != nil {
+		return 0, "", err
+	}
+	if xInd != 0xFF {
+		if _, err := r.Seek(24+11, io.SeekCurrent); err != nil { // SQLERRD1-6, SQLWARN0-A
+			return 0, "", err
+		}
+		for range 3 { // SQLRDBNAME, SQLERRMSG_m, SQLERRMSG_s
+			var ln [2]byte
+			if _, err := io.ReadFull(r, ln[:]); err != nil {
+				return 0, "", err
+			}
+			if _, err := r.Seek(int64(binary.BigEndian.Uint16(ln[:])), io.SeekCurrent); err != nil {
+				return 0, "", err
+			}
+		}
+	}
+	diagInd, err := r.ReadByte()
+	if err != nil {
+		return 0, "", err
+	}
+	if diagInd != 0xFF {
+		return 0, "", fmt.Errorf("SQLCODE=%d SQLSTATE=%s carries an SQLDIAGGRP, which is not supported", code, state)
+	}
+	return code, state, nil
 }
 
 func isLOBType(t uint8) bool {
