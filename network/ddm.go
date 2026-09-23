@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/getsynq/go-db2/converters"
 )
@@ -555,6 +557,19 @@ func parseName(b []byte) (string, []byte) {
 	return s2, rest2
 }
 
+// isPrintableUTF8 reports whether b is valid UTF-8 holding no control characters.
+func isPrintableUTF8(b []byte) bool {
+	if !utf8.Valid(b) {
+		return false
+	}
+	for _, r := range string(b) {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // ParseSQLDARD decodes column metadata from an SQLDARD reply packet.
 func ParseSQLDARD(obj []byte, endian binary.ByteOrder) ([]ColumnDescription, error) {
 	if len(obj) == 0 {
@@ -627,19 +642,12 @@ func ParseSQLDARD(obj []byte, endian binary.ByteOrder) ([]ColumnDescription, err
 		if delimPos != -1 {
 			nameChunk := rest[:delimPos]
 			rest = rest[delimPos+3:]
-			// Extract ASCII name from chunk
+			// Extract the name from the chunk: Db2 sends it as UTF-8.
 			for k := 0; k < len(nameChunk)-1; k++ {
 				nlen := int(nameChunk[k])
 				if nlen > 0 && k+1+nlen <= len(nameChunk) {
 					cand := nameChunk[k+1 : k+1+nlen]
-					isASCII := true
-					for _, c := range cand {
-						if c < 32 || c > 126 {
-							isASCII = false
-							break
-						}
-					}
-					if isASCII {
+					if isPrintableUTF8(cand) {
 						colName = string(cand)
 						break
 					}
