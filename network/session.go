@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-db2/go-db2/converters"
@@ -85,6 +86,38 @@ type Session struct {
 	rdbinttkn     []byte
 	autoCommit    bool
 	closed        bool
+	// broken is set once the byte stream can no longer be trusted: a socket
+	// read or write failed, or a reply could not be framed. Unread bytes may
+	// be left on the socket, so no further request may use it.
+	broken atomic.Bool
+}
+
+// Broken reports whether the session has seen an I/O or framing error and
+// must not be used for further requests.
+func (s *Session) Broken() bool {
+	return s.broken.Load()
+}
+
+// brokenOnErrorConn marks its session broken on the first failed read or write.
+type brokenOnErrorConn struct {
+	net.Conn
+	broken *atomic.Bool
+}
+
+func (c *brokenOnErrorConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.broken.Store(true)
+	}
+	return n, err
+}
+
+func (c *brokenOnErrorConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.broken.Store(true)
+	}
+	return n, err
 }
 
 // NewSession instantiates a new Db2 network session configuration.
@@ -215,7 +248,7 @@ func (s *Session) connectRaw(ctx context.Context) error {
 		_ = tcpConn.SetNoDelay(true)
 	}
 
-	s.conn = rawConn
+	s.conn = &brokenOnErrorConn{Conn: rawConn, broken: &s.broken}
 	s.closed = false
 
 	// Perform full DRDA Handshake
@@ -451,6 +484,8 @@ func (s *Session) readReplyChain() ([]ReplyPacket, error) {
 	for chained {
 		hdr, cp, data, moreData, err := ReadDSS(s.conn)
 		if err != nil {
+			// A frame that failed to parse may be only partly consumed.
+			s.broken.Store(true)
 			return nil, err
 		}
 		packets = append(packets, ReplyPacket{
