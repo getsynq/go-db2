@@ -291,6 +291,23 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return c.session.Ping(ctx)
 }
 
+// IsValid implements driver.Validator. database/sql calls it before returning
+// the connection to the pool, and discards the connection when it is false.
+func (c *Conn) IsValid() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.session != nil && !c.session.Broken()
+}
+
+// ResetSession implements driver.SessionResetter. It is called before a pooled
+// connection is reused; driver.ErrBadConn makes database/sql discard it.
+func (c *Conn) ResetSession(ctx context.Context) error {
+	if !c.IsValid() {
+		return driver.ErrBadConn
+	}
+	return nil
+}
+
 // Interface assertions
 // CheckNamedValue implements driver.NamedValueChecker interface.
 func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
@@ -305,4 +322,6 @@ var (
 	_ driver.ExecerContext      = (*Conn)(nil)
 	_ driver.QueryerContext     = (*Conn)(nil)
 	_ driver.NamedValueChecker  = (*Conn)(nil)
+	_ driver.Validator          = (*Conn)(nil)
+	_ driver.SessionResetter    = (*Conn)(nil)
 )
