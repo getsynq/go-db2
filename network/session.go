@@ -700,118 +700,7 @@ func (s *Session) QueryDirect(ctx context.Context, sql string) ([]ColumnDescript
 		return nil, nil, fmt.Errorf("failed to read query response: %w", err)
 	}
 
-	var columns []ColumnDescription
-	var fields []FieldDescriptor
-	var rows [][]any
-	var extdtaList [][]byte
-	needCNTQRY := false
-	var qryinsid uint64
-	var cntqryID uint16 = 1
-
-	for _, r := range replies {
-		if r.CodePoint == CodePointSQLDARD {
-			cols, err := ParseSQLDARD(r.Data, s.endian)
-			if err != nil {
-				return nil, nil, err
-			}
-			if len(cols) > 0 {
-				columns = cols
-			}
-		} else if r.CodePoint == CodePointQRYDSC {
-			flds, err := ParseQRYDSC(r.Data)
-			if err != nil {
-				return nil, nil, err
-			}
-			fields = flds
-		} else if r.CodePoint == CodePointEXTDTA {
-			extdtaList = append(extdtaList, r.Data)
-		} else if r.CodePoint == CodePointQRYDTA {
-			reader := bytes.NewReader(r.Data)
-			for reader.Len() >= 2 {
-				var rowHdr [2]byte
-				if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
-					break
-				}
-				if rowHdr[0] != 0xFF {
-					break
-				}
-
-				row := make([]any, len(fields))
-				for i, f := range fields {
-					val, err := converters.DecodeField(f.Type, f.PS, reader, s.endian)
-					if err != nil {
-						return nil, nil, fmt.Errorf("failed to decode column %d (Type=0x%02X, PS=%x, RemainingBytes=%d): %w", i+1, f.Type, f.PS, reader.Len(), err)
-					}
-					row[i] = val
-				}
-				rows = append(rows, row)
-			}
-		} else if r.CodePoint == CodePointOPNQRYRM {
-			sub, _ := ParseDDMReply(r.Data)
-			if insidBytes, ok := sub[CodePointQRYINSID]; ok && len(insidBytes) >= 8 {
-				qryinsid = binary.BigEndian.Uint64(insidBytes)
-			}
-			needCNTQRY = true
-			cntqryID = r.Header.CorrelationID
-		} else if r.CodePoint == CodePointSQLERRRM {
-			sub, _ := ParseDDMReply(r.Data)
-			return nil, nil, fmt.Errorf("db2: %s", string(sub[CodePointSRVDGN]))
-		} else if r.CodePoint == CodePointSQLCARD {
-			code, state, msg, _, parseErr := ParseSQLCARD(r.Data, s.endian)
-			if parseErr != nil {
-				return nil, nil, parseErr
-			}
-			if code < 0 {
-				return nil, nil, fmt.Errorf("db2: SQLCODE=%d SQLSTATE=%s %s", code, state, msg)
-			}
-		}
-	}
-
-	if needCNTQRY {
-		cntqry := PackCNTQRY(s.pkgid, s.pkgcnstkn, s.pkgsn, s.cfg.Database, s.qryblksz, qryinsid)
-		_, err = WriteRequestDSS(s.conn, cntqry, cntqryID, false, true)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		cntReplies, err := s.readReplyChain()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, r := range cntReplies {
-			if r.CodePoint == CodePointEXTDTA {
-				extdtaList = append(extdtaList, r.Data)
-			} else if r.CodePoint == CodePointQRYDTA {
-				reader := bytes.NewReader(r.Data)
-				for reader.Len() >= 2 {
-					var rowHdr [2]byte
-					if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
-						break
-					}
-					if rowHdr[0] != 0xFF {
-						break
-					}
-
-					row := make([]any, len(fields))
-					for i, f := range fields {
-						val, err := converters.DecodeField(f.Type, f.PS, reader, s.endian)
-						if err != nil {
-							return nil, nil, fmt.Errorf("failed to decode column %d in QueryDirect CNTQRY (Type=0x%02X, PS=%x, RemainingBytes=%d): %w", i+1, f.Type, f.PS, reader.Len(), err)
-						}
-						row[i] = val
-					}
-					rows = append(rows, row)
-				}
-			}
-		}
-	}
-
-	if len(extdtaList) > 0 {
-		stitchEXTDTA(fields, rows, extdtaList)
-	}
-
-	return columns, rows, nil
+	return s.fetchQuery(replies, nil)
 }
 
 // PrepareAndDescribe prepares a query/statement and retrieves its output columns and input parameter descriptors.
@@ -1044,115 +933,9 @@ func (s *Session) QueryWithParams(ctx context.Context, outputCols, paramCols []C
 		return nil, nil, err
 	}
 
-	var columns []ColumnDescription = outputCols
-	var fields []FieldDescriptor
-	var rows [][]any
-	var extdtaList [][]byte
-	needCNTQRY := false
-	var qryinsid uint64
-	var cntqryID uint16 = 1
-
-	for _, r := range replies {
-		if r.CodePoint == CodePointSQLDARD {
-			cols, err := ParseSQLDARD(r.Data, s.endian)
-			if err != nil {
-				return nil, nil, err
-			}
-			if len(cols) > 0 {
-				columns = cols
-			}
-		} else if r.CodePoint == CodePointQRYDSC {
-			flds, err := ParseQRYDSC(r.Data)
-			if err != nil {
-				return nil, nil, err
-			}
-			fields = flds
-		} else if r.CodePoint == CodePointEXTDTA {
-			extdtaList = append(extdtaList, r.Data)
-		} else if r.CodePoint == CodePointOPNQRYRM {
-			sub, _ := ParseDDMReply(r.Data)
-			if insidBytes, ok := sub[CodePointQRYINSID]; ok && len(insidBytes) >= 8 {
-				qryinsid = binary.BigEndian.Uint64(insidBytes)
-			}
-			needCNTQRY = true
-			cntqryID = r.Header.CorrelationID
-		} else if r.CodePoint == CodePointQRYDTA {
-			reader := bytes.NewReader(r.Data)
-			for reader.Len() >= 2 {
-				var rowHdr [2]byte
-				if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
-					break
-				}
-				if rowHdr[0] != 0xFF {
-					break
-				}
-
-				row := make([]any, len(fields))
-				for i, f := range fields {
-					val, err := converters.DecodeField(f.Type, f.PS, reader, s.endian)
-					if err != nil {
-						return nil, nil, fmt.Errorf("failed to decode column %d: %w", i+1, err)
-					}
-					row[i] = val
-				}
-				rows = append(rows, row)
-			}
-		} else if r.CodePoint == CodePointSQLCARD {
-			code, state, msg, _, parseErr := ParseSQLCARD(r.Data, s.endian)
-			if parseErr != nil {
-				return nil, nil, parseErr
-			}
-			if code < 0 {
-				return nil, nil, fmt.Errorf("db2: SQLCODE=%d SQLSTATE=%s %s", code, state, msg)
-			}
-		} else if r.CodePoint == CodePointSQLERRRM {
-			sub, _ := ParseDDMReply(r.Data)
-			return nil, nil, fmt.Errorf("db2: %s", string(sub[CodePointSRVDGN]))
-		}
-	}
-
-	if needCNTQRY {
-		cntqry := PackCNTQRY(s.pkgid, s.pkgcnstkn, s.pkgsn, s.cfg.Database, s.qryblksz, qryinsid)
-		_, err = WriteRequestDSS(s.conn, cntqry, cntqryID, false, true)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		cntReplies, err := s.readReplyChain()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, r := range cntReplies {
-			if r.CodePoint == CodePointEXTDTA {
-				extdtaList = append(extdtaList, r.Data)
-			} else if r.CodePoint == CodePointQRYDTA {
-				reader := bytes.NewReader(r.Data)
-				for reader.Len() >= 2 {
-					var rowHdr [2]byte
-					if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
-						break
-					}
-					if rowHdr[0] != 0xFF {
-						break
-					}
-
-					row := make([]any, len(fields))
-					for i, f := range fields {
-						val, err := converters.DecodeField(f.Type, f.PS, reader, s.endian)
-						if err != nil {
-							return nil, nil, fmt.Errorf("failed to decode column %d in CNTQRY (Type=0x%02X, PS=%x, RemainingBytes=%d): %w", i+1, f.Type, f.PS, reader.Len(), err)
-						}
-						row[i] = val
-					}
-					rows = append(rows, row)
-				}
-			}
-		}
-	}
-
-	if len(extdtaList) > 0 {
-		stitchEXTDTA(fields, rows, extdtaList)
+	columns, rows, err := s.fetchQuery(replies, outputCols)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if s.autoCommit {
@@ -1165,6 +948,138 @@ func (s *Session) QueryWithParams(ctx context.Context, outputCols, paramCols []C
 	}
 
 	return columns, rows, nil
+}
+
+// queryResult accumulates the replies to one query: its descriptors, the row
+// data of every query block and the externalized (EXTDTA) values.
+type queryResult struct {
+	columns []ColumnDescription
+	fields  []FieldDescriptor
+	// rowData is the QRYDTA of every block, concatenated: a row may start in
+	// one block and end in the next.
+	rowData  bytes.Buffer
+	extdta   [][]byte
+	open     bool // OPNQRYRM seen: the cursor is open on the server
+	ended    bool // ENDQRYRM or SQLCODE +100 seen: the server closed it
+	qryinsid uint64
+	cntqryID uint16
+}
+
+// consume records one reply chain. It reports whether the chain carried any
+// query data, and returns the first error the server reported in it.
+func (q *queryResult) consume(replies []ReplyPacket, endian binary.ByteOrder) (bool, error) {
+	progress := false
+	for _, r := range replies {
+		switch r.CodePoint {
+		case CodePointSQLDARD:
+			cols, err := ParseSQLDARD(r.Data, endian)
+			if err != nil {
+				return progress, err
+			}
+			if len(cols) > 0 {
+				q.columns = cols
+			}
+		case CodePointQRYDSC:
+			flds, err := ParseQRYDSC(r.Data)
+			if err != nil {
+				return progress, err
+			}
+			q.fields = flds
+		case CodePointQRYDTA:
+			q.rowData.Write(r.Data)
+			progress = true
+		case CodePointEXTDTA:
+			q.extdta = append(q.extdta, r.Data)
+			progress = true
+		case CodePointOPNQRYRM:
+			sub, _ := ParseDDMReply(r.Data)
+			if insidBytes, ok := sub[CodePointQRYINSID]; ok && len(insidBytes) >= 8 {
+				q.qryinsid = binary.BigEndian.Uint64(insidBytes)
+			}
+			q.open = true
+			q.cntqryID = r.Header.CorrelationID
+		case CodePointENDQRYRM:
+			q.ended = true
+		case CodePointSQLERRRM:
+			sub, _ := ParseDDMReply(r.Data)
+			return progress, fmt.Errorf("db2: %s", string(sub[CodePointSRVDGN]))
+		case CodePointSQLCARD:
+			code, state, msg, _, err := ParseSQLCARD(r.Data, endian)
+			if err != nil {
+				return progress, err
+			}
+			if code < 0 {
+				return progress, fmt.Errorf("db2: SQLCODE=%d SQLSTATE=%s %s", code, state, msg)
+			}
+			if code == 100 {
+				q.ended = true
+			}
+		}
+	}
+	return progress, nil
+}
+
+// fetchQuery reads a query's result from the replies to OPNQRY, continuing
+// the query with CNTQRY, one query block at a time, until the server ends it.
+func (s *Session) fetchQuery(replies []ReplyPacket, columns []ColumnDescription) ([]ColumnDescription, [][]any, error) {
+	q := &queryResult{columns: columns, cntqryID: 1}
+	if _, err := q.consume(replies, s.endian); err != nil {
+		return nil, nil, err
+	}
+
+	for q.open && !q.ended {
+		cntqry := PackCNTQRY(s.pkgid, s.pkgcnstkn, s.pkgsn, s.cfg.Database, s.qryblksz, q.qryinsid)
+		if _, err := WriteRequestDSS(s.conn, cntqry, q.cntqryID, false, true); err != nil {
+			return nil, nil, fmt.Errorf("failed to write CNTQRY: %w", err)
+		}
+		cntReplies, err := s.readReplyChain()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read CNTQRY response: %w", err)
+		}
+		progress, err := q.consume(cntReplies, s.endian)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !progress && !q.ended {
+			return nil, nil, errors.New("db2: CNTQRY returned no query data and did not end the query")
+		}
+	}
+
+	rows, err := decodeRows(q.fields, q.rowData.Bytes(), s.endian)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(q.extdta) > 0 {
+		stitchEXTDTA(q.fields, rows, q.extdta)
+	}
+	return q.columns, rows, nil
+}
+
+// decodeRows decodes QRYDTA row data: each row is a 2-byte header starting
+// 0xFF, followed by one value per field.
+func decodeRows(fields []FieldDescriptor, data []byte, endian binary.ByteOrder) ([][]any, error) {
+	reader := bytes.NewReader(data)
+	var rows [][]any
+	for reader.Len() >= 2 {
+		var rowHdr [2]byte
+		if _, err := io.ReadFull(reader, rowHdr[:]); err != nil {
+			break
+		}
+		if rowHdr[0] != 0xFF {
+			break
+		}
+		row := make([]any, len(fields))
+		for i, f := range fields {
+			val, err := converters.DecodeField(f.Type, f.PS, reader, endian)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode row %d column %d (Type=0x%02X, PS=%x, RemainingBytes=%d): %w",
+					len(rows)+1, i+1, f.Type, f.PS, reader.Len(), err)
+			}
+			row[i] = val
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func isLOBType(t uint8) bool {
