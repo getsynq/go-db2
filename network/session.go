@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-db2/go-db2/converters"
@@ -85,6 +86,68 @@ type Session struct {
 	rdbinttkn     []byte
 	autoCommit    bool
 	closed        bool
+	// broken is set once the byte stream can no longer be trusted: a socket
+	// read or write failed, or a reply could not be framed. Unread bytes may
+	// be left on the socket, so no further request may use it.
+	broken atomic.Bool
+}
+
+// Broken reports whether the session has seen an I/O or framing error and
+// must not be used for further requests.
+func (s *Session) Broken() bool {
+	return s.broken.Load()
+}
+
+// brokenOnErrorConn marks its session broken on the first failed read or write.
+type brokenOnErrorConn struct {
+	net.Conn
+	broken *atomic.Bool
+	// interruptedBy holds the context error that cut the current request short.
+	interruptedBy atomic.Pointer[error]
+}
+
+func (c *brokenOnErrorConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		err = c.fail(err)
+	}
+	return n, err
+}
+
+func (c *brokenOnErrorConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		err = c.fail(err)
+	}
+	return n, err
+}
+
+// fail marks the session broken and, when the I/O was cut short by a context,
+// reports the context's error so callers can match it with errors.Is.
+func (c *brokenOnErrorConn) fail(err error) error {
+	c.broken.Store(true)
+	if cause := c.interruptedBy.Load(); cause != nil {
+		return fmt.Errorf("%w (%v)", *cause, err)
+	}
+	return err
+}
+
+// watch interrupts the session's socket I/O when ctx is done, by moving the
+// socket deadline to now; call the returned function once the request is over.
+// The request is abandoned mid-exchange, so the session is marked broken and
+// its connection is discarded.
+func (s *Session) watch(ctx context.Context) func() {
+	c, ok := s.conn.(*brokenOnErrorConn)
+	if !ok || ctx.Done() == nil {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		cause := context.Cause(ctx)
+		c.interruptedBy.Store(&cause)
+		c.broken.Store(true)
+		_ = c.SetDeadline(time.Now())
+	})
+	return func() { stop() }
 }
 
 // NewSession instantiates a new Db2 network session configuration.
@@ -215,8 +278,9 @@ func (s *Session) connectRaw(ctx context.Context) error {
 		_ = tcpConn.SetNoDelay(true)
 	}
 
-	s.conn = rawConn
+	s.conn = &brokenOnErrorConn{Conn: rawConn, broken: &s.broken}
 	s.closed = false
+	defer s.watch(ctx)()
 
 	// Perform full DRDA Handshake
 	if err := s.handshake(ctx); err != nil {
@@ -451,6 +515,8 @@ func (s *Session) readReplyChain() ([]ReplyPacket, error) {
 	for chained {
 		hdr, cp, data, moreData, err := ReadDSS(s.conn)
 		if err != nil {
+			// A frame that failed to parse may be only partly consumed.
+			s.broken.Store(true)
 			return nil, err
 		}
 		packets = append(packets, ReplyPacket{
@@ -473,6 +539,7 @@ func (s *Session) Ping(ctx context.Context) error {
 	if s.closed || s.conn == nil {
 		return errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	// RDBCMM as a lightweight ping
 	s.correlationID = 1
@@ -491,6 +558,7 @@ func (s *Session) Commit(ctx context.Context) error {
 	if s.closed || s.conn == nil {
 		return errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	rdbcmm := PackRDBCMM()
@@ -512,6 +580,7 @@ func (s *Session) Rollback(ctx context.Context) error {
 	if s.closed || s.conn == nil {
 		return errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	rdbrllbck := PackRDBRLLBCK()
@@ -533,6 +602,7 @@ func (s *Session) ExecDirect(ctx context.Context, sql string) (int64, error) {
 	if s.closed || s.conn == nil {
 		return 0, errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	var err error
@@ -599,6 +669,7 @@ func (s *Session) QueryDirect(ctx context.Context, sql string) ([]ColumnDescript
 	if s.closed || s.conn == nil {
 		return nil, nil, errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	var err error
@@ -640,6 +711,7 @@ func (s *Session) PrepareAndDescribe(ctx context.Context, sql string) ([]ColumnD
 	if s.closed || s.conn == nil {
 		return nil, nil, errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	var err error
@@ -707,6 +779,7 @@ func (s *Session) ExecWithParams(ctx context.Context, paramCols []ColumnDescript
 	if s.closed || s.conn == nil {
 		return 0, nil, errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	colTypes := make([]types.SQLType, len(paramCols))
 	colLens := make([]int64, len(paramCols))
@@ -823,6 +896,7 @@ func (s *Session) QueryWithParams(ctx context.Context, outputCols, paramCols []C
 	if s.closed || s.conn == nil {
 		return nil, nil, errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	colTypes := make([]types.SQLType, len(paramCols))
 	colLens := make([]int64, len(paramCols))
@@ -1131,6 +1205,7 @@ func (s *Session) SwitchUser(ctx context.Context, newUser string, password ...st
 	if s.closed || s.conn == nil {
 		return errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	// If password or DRDA-level SECCHK user switch is needed
 	var pwdBytes []byte
@@ -1174,6 +1249,7 @@ func (s *Session) ExecSQLSet(ctx context.Context, sql string) error {
 	if s.closed || s.conn == nil {
 		return errors.New("db2: connection is closed")
 	}
+	defer s.watch(ctx)()
 
 	s.correlationID = 1
 	var err error
