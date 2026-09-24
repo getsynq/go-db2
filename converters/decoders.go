@@ -72,12 +72,16 @@ const (
 	DRDATypeNFixBytes    uint8 = 0xC1
 	DRDATypeVarBinary    uint8 = 0xC2
 	DRDATypeNVarBinary   uint8 = 0xC3
-	DRDATypeLOBBytes     uint8 = 0xC8
-	DRDATypeNLOBBytes    uint8 = 0xC9
-	DRDATypeLOBCSBCS     uint8 = 0xCE
-	DRDATypeNLOBCSBCS    uint8 = 0xCF
-	DRDATypeDecFloat     uint8 = 0xBA
-	DRDATypeNDecFloat    uint8 = 0xBB
+	// DRDATypeXML is an XML value: Db2 describes an XML result column with it
+	// and sends the serialized value as EXTDTA, as it does for LOBs.
+	DRDATypeXML       uint8 = 0xC6
+	DRDATypeNXML      uint8 = 0xC7
+	DRDATypeLOBBytes  uint8 = 0xC8
+	DRDATypeNLOBBytes uint8 = 0xC9
+	DRDATypeLOBCSBCS  uint8 = 0xCE
+	DRDATypeNLOBCSBCS uint8 = 0xCF
+	DRDATypeDecFloat  uint8 = 0xBA
+	DRDATypeNDecFloat uint8 = 0xBB
 )
 
 // IsNullableDRDAType returns true if the DRDA wire type supports NULL indicators.
@@ -94,7 +98,7 @@ func IsNullableDRDAType(t uint8) bool {
 		DRDATypeNBoolean, DRDATypeNFixBytes, DRDATypeNVarBinary,
 		DRDATypeNLOBLOC, DRDATypeNCLOBLOC, DRDATypeNDBCSCLOBLOC,
 		DRDATypeNLOBBytes, DRDATypeNLOBCSBCS, DRDATypeNDecFloat,
-		0xCD, 0xF5, 0xF7, 0xF9:
+		DRDATypeNXML, 0xCD, 0xF5, 0xF7, 0xF9:
 		return true
 	default:
 		return false
@@ -386,6 +390,7 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 	case DRDATypeLOBLOC, DRDATypeNLOBLOC, DRDATypeCLOBLOC, DRDATypeNCLOBLOC,
 		DRDATypeDBCSCLOBLOC, DRDATypeNDBCSCLOBLOC,
 		DRDATypeLOBBytes, DRDATypeNLOBBytes, DRDATypeLOBCSBCS, DRDATypeNLOBCSBCS,
+		DRDATypeXML, DRDATypeNXML,
 		0x10, 0x11, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9:
 		ln := int(binary.BigEndian.Uint16(ps)) & 0x7FFF
 		if ln == 0 {
@@ -398,7 +403,8 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 			}
 		}
 		if drdaType == DRDATypeLOBCSBCS || drdaType == DRDATypeNLOBCSBCS || drdaType == 0xF6 || drdaType == 0xF7 ||
-			drdaType == DRDATypeDBCSCLOBLOC || drdaType == DRDATypeNDBCSCLOBLOC || drdaType == 0xF8 || drdaType == 0xF9 {
+			drdaType == DRDATypeDBCSCLOBLOC || drdaType == DRDATypeNDBCSCLOBLOC || drdaType == 0xF8 || drdaType == 0xF9 ||
+			drdaType == DRDATypeXML || drdaType == DRDATypeNXML {
 			return "", nil
 		}
 		return []byte{}, nil
