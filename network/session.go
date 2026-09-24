@@ -1174,6 +1174,7 @@ func isLOBType(t uint8) bool {
 		converters.DRDATypeDBCSCLOBLOC, converters.DRDATypeNDBCSCLOBLOC,
 		converters.DRDATypeLOBBytes, converters.DRDATypeNLOBBytes,
 		converters.DRDATypeLOBCSBCS, converters.DRDATypeNLOBCSBCS,
+		converters.DRDATypeXML, converters.DRDATypeNXML,
 		0x10, 0x11, 0xCD, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9:
 		return true
 	default:
@@ -1186,6 +1187,7 @@ func isCLOBType(t uint8) bool {
 	case converters.DRDATypeCLOBLOC, converters.DRDATypeNCLOBLOC,
 		converters.DRDATypeDBCSCLOBLOC, converters.DRDATypeNDBCSCLOBLOC,
 		converters.DRDATypeLOBCSBCS, converters.DRDATypeNLOBCSBCS,
+		converters.DRDATypeXML, converters.DRDATypeNXML,
 		0xCD, 0xF6, 0xF7, 0xF8, 0xF9:
 		return true
 	default:

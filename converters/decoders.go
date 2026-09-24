@@ -72,12 +72,16 @@ const (
 	DRDATypeNFixBytes    uint8 = 0xC1
 	DRDATypeVarBinary    uint8 = 0xC2
 	DRDATypeNVarBinary   uint8 = 0xC3
-	DRDATypeLOBBytes     uint8 = 0xC8
-	DRDATypeNLOBBytes    uint8 = 0xC9
-	DRDATypeLOBCSBCS     uint8 = 0xCE
-	DRDATypeNLOBCSBCS    uint8 = 0xCF
-	DRDATypeDecFloat     uint8 = 0xBA
-	DRDATypeNDecFloat    uint8 = 0xBB
+	// DRDATypeXML is an XML value: Db2 describes an XML result column with it
+	// and sends the serialized value as EXTDTA, as it does for LOBs.
+	DRDATypeXML       uint8 = 0xC6
+	DRDATypeNXML      uint8 = 0xC7
+	DRDATypeLOBBytes  uint8 = 0xC8
+	DRDATypeNLOBBytes uint8 = 0xC9
+	DRDATypeLOBCSBCS  uint8 = 0xCE
+	DRDATypeNLOBCSBCS uint8 = 0xCF
+	DRDATypeDecFloat  uint8 = 0xBA
+	DRDATypeNDecFloat uint8 = 0xBB
 )
 
 // IsNullableDRDAType returns true if the DRDA wire type supports NULL indicators.
@@ -94,7 +98,7 @@ func IsNullableDRDAType(t uint8) bool {
 		DRDATypeNBoolean, DRDATypeNFixBytes, DRDATypeNVarBinary,
 		DRDATypeNLOBLOC, DRDATypeNCLOBLOC, DRDATypeNDBCSCLOBLOC,
 		DRDATypeNLOBBytes, DRDATypeNLOBCSBCS, DRDATypeNDecFloat,
-		0xCD, 0xF5, 0xF7, 0xF9:
+		DRDATypeNXML, 0xCD, 0xF5, 0xF7, 0xF9:
 		return true
 	default:
 		return false
@@ -133,7 +137,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 	switch drdaType {
 	case DRDATypeChar, DRDATypeNChar, DRDATypeMix, DRDATypeNMix:
 		ln := int(binary.BigEndian.Uint16(ps))
-		buf := make([]byte, ln)
+		var stackBuf [64]byte
+		var buf []byte
+		if ln <= 64 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -142,7 +152,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 	case DRDATypeGraphic, DRDATypeNGraphic:
 		charLen := int(binary.BigEndian.Uint16(ps))
 		byteLen := charLen * 2
-		buf := make([]byte, byteLen)
+		var stackBuf [128]byte
+		var buf []byte
+		if byteLen <= 128 {
+			buf = stackBuf[:byteLen]
+		} else {
+			buf = make([]byte, byteLen)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -152,12 +168,18 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 		DRDATypeVarMix, DRDATypeNVarMix,
 		DRDATypeLong, DRDATypeNLong,
 		DRDATypeLongMix, DRDATypeNLongMix:
-		var lenBuf [2]byte
-		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		rawLen, err := read2Bytes(r, binary.BigEndian)
+		if err != nil {
 			return nil, err
 		}
-		ln := int(binary.BigEndian.Uint16(lenBuf[:]))
-		buf := make([]byte, ln)
+		ln := int(rawLen)
+		var stackBuf [64]byte
+		var buf []byte
+		if ln <= 64 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -165,40 +187,52 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 
 	case DRDATypeVarGraph, DRDATypeNVarGraph,
 		DRDATypeLonGraph, DRDATypeNLonGraph:
-		var lenBuf [2]byte
-		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		rawLen, err := read2Bytes(r, binary.BigEndian)
+		if err != nil {
 			return nil, err
 		}
-		rawLen := int(binary.BigEndian.Uint16(lenBuf[:]))
-		byteLen := rawLen * 2
-		buf := make([]byte, byteLen)
+		byteLen := int(rawLen) * 2
+		var stackBuf [128]byte
+		var buf []byte
+		if byteLen <= 128 {
+			buf = stackBuf[:byteLen]
+		} else {
+			buf = make([]byte, byteLen)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		return DecodeUTF16BE(buf), nil
 
 	case DRDATypeSmall, DRDATypeNSmall:
-		var buf [2]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
+		v, err := read2Bytes(r, endian)
+		if err != nil {
 			return nil, err
 		}
-		return int64(int16(endian.Uint16(buf[:]))), nil
+		return int64(int16(v)), nil
 
 	case DRDATypeInteger, DRDATypeNInteger:
-		var buf [4]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
+		v, err := read4Bytes(r, endian)
+		if err != nil {
 			return nil, err
 		}
-		return int64(int32(endian.Uint32(buf[:]))), nil
+		return int64(int32(v)), nil
 
 	case DRDATypeInteger8, DRDATypeNInteger8:
-		var buf [8]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
+		v, err := read8Bytes(r, endian)
+		if err != nil {
 			return nil, err
 		}
-		return int64(endian.Uint64(buf[:])), nil
+		return int64(v), nil
 
 	case DRDAType1ByteInt, DRDATypeN1ByteInt:
+		if br, ok := r.(io.ByteReader); ok {
+			b, err := br.ReadByte()
+			if err != nil {
+				return nil, err
+			}
+			return int64(int8(b)), nil
+		}
 		var buf [1]byte
 		if _, err := io.ReadFull(r, buf[:]); err != nil {
 			return nil, err
@@ -206,19 +240,17 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 		return int64(int8(buf[0])), nil
 
 	case DRDATypeFloat4, DRDATypeNFloat4:
-		var buf [4]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
+		bits, err := read4Bytes(r, endian)
+		if err != nil {
 			return nil, err
 		}
-		bits := endian.Uint32(buf[:])
 		return float64(math.Float32frombits(bits)), nil
 
 	case DRDATypeFloat8, DRDATypeNFloat8:
-		var buf [8]byte
-		if _, err := io.ReadFull(r, buf[:]); err != nil {
+		bits, err := read8Bytes(r, endian)
+		if err != nil {
 			return nil, err
 		}
-		bits := endian.Uint64(buf[:])
 		return math.Float64frombits(bits), nil
 
 	case DRDATypeBoolean, DRDATypeNBoolean:
@@ -226,7 +258,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 		if ln <= 0 {
 			return false, nil
 		}
-		buf := make([]byte, ln)
+		var stackBuf [16]byte
+		var buf []byte
+		if ln <= 16 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -234,7 +272,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 
 	case DRDATypeDate, DRDATypeNDate:
 		ln := int(binary.BigEndian.Uint16(ps))
-		buf := make([]byte, ln)
+		var stackBuf [32]byte
+		var buf []byte
+		if ln <= 32 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -246,7 +290,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 
 	case DRDATypeTime, DRDATypeNTime:
 		ln := int(binary.BigEndian.Uint16(ps))
-		buf := make([]byte, ln)
+		var stackBuf [32]byte
+		var buf []byte
+		if ln <= 32 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -254,7 +304,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 
 	case DRDATypeTimestamp, DRDATypeNTimestamp:
 		ln := int(binary.BigEndian.Uint16(ps))
-		buf := make([]byte, ln)
+		var stackBuf [64]byte
+		var buf []byte
+		if ln <= 64 {
+			buf = stackBuf[:ln]
+		} else {
+			buf = make([]byte, ln)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -319,7 +375,13 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 		precision := int(ps[0])
 		scale := int(ps[1])
 		byteLen := (precision + 2) / 2
-		buf := make([]byte, byteLen)
+		var stackBuf [16]byte
+		var buf []byte
+		if byteLen <= 16 {
+			buf = stackBuf[:byteLen]
+		} else {
+			buf = make([]byte, byteLen)
+		}
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
@@ -328,6 +390,7 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 	case DRDATypeLOBLOC, DRDATypeNLOBLOC, DRDATypeCLOBLOC, DRDATypeNCLOBLOC,
 		DRDATypeDBCSCLOBLOC, DRDATypeNDBCSCLOBLOC,
 		DRDATypeLOBBytes, DRDATypeNLOBBytes, DRDATypeLOBCSBCS, DRDATypeNLOBCSBCS,
+		DRDATypeXML, DRDATypeNXML,
 		0x10, 0x11, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9:
 		ln := int(binary.BigEndian.Uint16(ps)) & 0x7FFF
 		if ln == 0 {
@@ -340,7 +403,8 @@ func DecodeField(drdaType uint8, ps []byte, r io.Reader, endian binary.ByteOrder
 			}
 		}
 		if drdaType == DRDATypeLOBCSBCS || drdaType == DRDATypeNLOBCSBCS || drdaType == 0xF6 || drdaType == 0xF7 ||
-			drdaType == DRDATypeDBCSCLOBLOC || drdaType == DRDATypeNDBCSCLOBLOC || drdaType == 0xF8 || drdaType == 0xF9 {
+			drdaType == DRDATypeDBCSCLOBLOC || drdaType == DRDATypeNDBCSCLOBLOC || drdaType == 0xF8 || drdaType == 0xF9 ||
+			drdaType == DRDATypeXML || drdaType == DRDATypeNXML {
 			return "", nil
 		}
 		return []byte{}, nil
@@ -528,4 +592,107 @@ func ParseSQLDTARD(data []byte, endian binary.ByteOrder) ([]any, error) {
 	}
 
 	return results, nil
+}
+
+// read2Bytes reads 2 bytes from r using io.ByteReader if available to avoid slice heap allocation.
+func read2Bytes(r io.Reader, endian binary.ByteOrder) (uint16, error) {
+	if br, ok := r.(io.ByteReader); ok {
+		b0, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b1, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if endian == binary.BigEndian {
+			return uint16(b0)<<8 | uint16(b1), nil
+		}
+		return uint16(b1)<<8 | uint16(b0), nil
+	}
+	var buf [2]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return 0, err
+	}
+	return endian.Uint16(buf[:]), nil
+}
+
+// read4Bytes reads 4 bytes from r using io.ByteReader if available to avoid slice heap allocation.
+func read4Bytes(r io.Reader, endian binary.ByteOrder) (uint32, error) {
+	if br, ok := r.(io.ByteReader); ok {
+		b0, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b1, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b3, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if endian == binary.BigEndian {
+			return uint32(b0)<<24 | uint32(b1)<<16 | uint32(b2)<<8 | uint32(b3), nil
+		}
+		return uint32(b3)<<24 | uint32(b2)<<16 | uint32(b1)<<8 | uint32(b0), nil
+	}
+	var buf [4]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return 0, err
+	}
+	return endian.Uint32(buf[:]), nil
+}
+
+// read8Bytes reads 8 bytes from r using io.ByteReader if available to avoid slice heap allocation.
+func read8Bytes(r io.Reader, endian binary.ByteOrder) (uint64, error) {
+	if br, ok := r.(io.ByteReader); ok {
+		b0, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b1, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b3, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b4, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b5, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b6, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b7, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if endian == binary.BigEndian {
+			return uint64(b0)<<56 | uint64(b1)<<48 | uint64(b2)<<40 | uint64(b3)<<32 |
+				uint64(b4)<<24 | uint64(b5)<<16 | uint64(b6)<<8 | uint64(b7), nil
+		}
+		return uint64(b7)<<56 | uint64(b6)<<48 | uint64(b5)<<40 | uint64(b4)<<32 |
+			uint64(b3)<<24 | uint64(b2)<<16 | uint64(b1)<<8 | uint64(b0), nil
+	}
+	var buf [8]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return 0, err
+	}
+	return endian.Uint64(buf[:]), nil
 }
