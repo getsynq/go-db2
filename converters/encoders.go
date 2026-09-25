@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/types"
 )
 
 // Optimization: Pre-allocated static byte slices for FDODSC parameter descriptors to avoid heap allocations on every call.

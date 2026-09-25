@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/go-db2/go-db2/converters"
+	"github.com/getsynq/go-db2/converters"
 )
 
 func TestPackEXCSAT(t *testing.T) {

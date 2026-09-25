@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 // Conn implements the database/sql/driver.Conn interface for IBM Db2.

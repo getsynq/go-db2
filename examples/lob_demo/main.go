@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-db2/go-db2"
+	_ "github.com/getsynq/go-db2"
 )
 
 func main() {

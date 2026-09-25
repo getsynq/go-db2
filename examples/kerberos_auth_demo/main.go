@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/go-db2/go-db2"
-	"github.com/go-db2/go-db2/network/security"
+	_ "github.com/getsynq/go-db2"
+	"github.com/getsynq/go-db2/network/security"
 )
 
 func main() {

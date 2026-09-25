@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-db2/go-db2/network"
+	"github.com/getsynq/go-db2/network"
 )
 
 // A reply the client cannot frame leaves unread bytes on the socket. The

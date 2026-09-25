@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/go-db2/go-db2"
+	_ "github.com/getsynq/go-db2"
 )
 
 // Product represents a business entity mapped to a Db2 relational table.

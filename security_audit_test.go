@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-db2/go-db2/converters"
-	"github.com/go-db2/go-db2/network"
-	"github.com/go-db2/go-db2/network/security"
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/converters"
+	"github.com/getsynq/go-db2/network"
+	"github.com/getsynq/go-db2/network/security"
+	"github.com/getsynq/go-db2/types"
 )
 
 // 1. SEC-01: SQL Injection in Administrative Functions (CreateDb, DropDb)

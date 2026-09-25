@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-db2/go-db2/converters"
-	"github.com/go-db2/go-db2/network/security"
-	"github.com/go-db2/go-db2/types"
+	"github.com/getsynq/go-db2/converters"
+	"github.com/getsynq/go-db2/network/security"
+	"github.com/getsynq/go-db2/types"
 )
 
 var validUserIdentRegex = regexp.MustCompile(`^[a-zA-Z0-9_#$]{1,128}$`)
